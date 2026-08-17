@@ -35,6 +35,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -119,6 +120,9 @@ data class InvoiceEntity(
     val fee: Int,
     val total: Int,
     val status: String,
+    val category: String = "Deposit",
+    val qrisImageUrl: String = "",
+    val expiredAt: String = "",
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -135,9 +139,12 @@ interface InvoiceDao {
 
     @Query("SELECT SUM(total) FROM invoices WHERE status = 'paid' OR status = 'PAID'")
     fun getTotalBalance(): Flow<Int?>
+
+    @Query("DELETE FROM invoices WHERE LOWER(status) IN ('paid', 'expired', 'success')")
+    suspend fun clearCompletedInvoices()
 }
 
-@Database(entities = [InvoiceEntity::class], version = 1, exportSchema = false)
+@Database(entities = [InvoiceEntity::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun invoiceDao(): InvoiceDao
     companion object {
@@ -148,7 +155,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "kasir_database"
-                ).build()
+                ).fallbackToDestructiveMigration().build()
                 INSTANCE = instance
                 instance
             }
@@ -179,13 +186,19 @@ object ApiService {
                 body?.let {
                     val json = JSONObject(it)
                     if (json.optBoolean("success", false)) {
-                        val qrisUrl = json.optString("qris_image", "")
+                        val qrisUrl = json.optString("qris_image", json.optString("qrcode_url", json.optString("qr_code", json.optString("qris", json.optString("qr_string", "")))))
+                        val finalQrisUrl = if (qrisUrl.startsWith("000201")) {
+                            // If it's a raw QR payload, use an external API to generate image
+                            "https://quickchart.io/qr?size=300&text=" + java.net.URLEncoder.encode(qrisUrl, "UTF-8")
+                        } else {
+                            qrisUrl
+                        }
                         return@withContext Invoice(
                             invoiceId = json.optString("invoice_id"),
                             amount = json.optInt("amount"),
                             fee = json.optInt("fee"),
                             total = json.optInt("total"),
-                            qrisImageUrl = qrisUrl,
+                            qrisImageUrl = finalQrisUrl,
                             expiredAt = json.optString("expired_at")
                         )
                     }
@@ -266,7 +279,24 @@ object ApiService {
                                     val fee = item.optInt("fee", 0)
                                     val total = item.optInt("total", amount + fee)
                                     val status = item.optString("status", "pending")
-                                    list.add(InvoiceEntity(invId, amount, fee, total, status))
+                                    val category = item.optString("category", "Top Up / Pay")
+                                    val qrisUrl = item.optString("qris_image", item.optString("qrcode_url", item.optString("qr_code", item.optString("qris", item.optString("qr_string", "")))))
+                                    val expiredAt = item.optString("expired_at", "")
+                                    val finalQrisUrl = if (qrisUrl.startsWith("000201")) {
+                                        "https://quickchart.io/qr?size=300&text=" + java.net.URLEncoder.encode(qrisUrl, "UTF-8")
+                                    } else {
+                                        qrisUrl
+                                    }
+                                    list.add(InvoiceEntity(
+                                        invoiceId = invId, 
+                                        amount = amount, 
+                                        fee = fee, 
+                                        total = total, 
+                                        status = status,
+                                        category = category,
+                                        qrisImageUrl = finalQrisUrl,
+                                        expiredAt = expiredAt
+                                    ))
                                 }
                             }
                             if (list.isNotEmpty()) return@withContext list
@@ -344,7 +374,16 @@ class KasirViewModel(application: android.app.Application) : AndroidViewModel(ap
             _invoice.value = result
             _isLoading.value = false
             if (result != null) {
-                dao.insertInvoice(InvoiceEntity(result.invoiceId, result.amount, result.fee, result.total, "pending"))
+                dao.insertInvoice(InvoiceEntity(
+                    invoiceId = result.invoiceId,
+                    amount = result.amount,
+                    fee = result.fee,
+                    total = result.total,
+                    status = "pending",
+                    category = "Deposit",
+                    qrisImageUrl = result.qrisImageUrl,
+                    expiredAt = result.expiredAt
+                ))
                 startPolling(result.invoiceId)
             }
         }
@@ -388,6 +427,12 @@ class KasirViewModel(application: android.app.Application) : AndroidViewModel(ap
         stopPolling()
     }
 
+    fun clearCompletedInvoices() {
+        viewModelScope.launch {
+            dao.clearCompletedInvoices()
+        }
+    }
+
     fun syncTransactionHistory() {
         viewModelScope.launch {
             _isSyncingHistory.value = true
@@ -413,6 +458,24 @@ class KasirViewModel(application: android.app.Application) : AndroidViewModel(ap
             } finally {
                 _isSyncingHistory.value = false
             }
+        }
+    }
+
+    fun loadInvoiceFromHistory(entity: InvoiceEntity) {
+        val invoiceObj = Invoice(
+            invoiceId = entity.invoiceId,
+            amount = entity.amount,
+            fee = entity.fee,
+            total = entity.total,
+            qrisImageUrl = entity.qrisImageUrl,
+            expiredAt = entity.expiredAt
+        )
+        _invoice.value = invoiceObj
+        _status.value = entity.status
+        if (entity.status.equals("pending", ignoreCase = true)) {
+            startPolling(entity.invoiceId)
+        } else {
+            stopPolling()
         }
     }
 
@@ -682,7 +745,12 @@ fun KasirQrisScreen(viewModel: KasirViewModel = viewModel()) {
                         history = history,
                         primaryColor = primaryColor,
                         isSyncing = isSyncing,
-                        onSync = { viewModel.syncTransactionHistory() }
+                        onSync = { viewModel.syncTransactionHistory() },
+                        onItemClick = { invoiceEntity ->
+                            viewModel.loadInvoiceFromHistory(invoiceEntity)
+                            currentTab = BottomTab.HOME
+                        },
+                        onClearCompleted = { viewModel.clearCompletedInvoices() }
                     )
                 }
                 BottomTab.SALDO -> {
@@ -700,7 +768,9 @@ fun RiwayatScreen(
     history: List<InvoiceEntity>,
     primaryColor: Color,
     isSyncing: Boolean = false,
-    onSync: () -> Unit = {}
+    onSync: () -> Unit = {},
+    onItemClick: (InvoiceEntity) -> Unit = {},
+    onClearCompleted: () -> Unit = {}
 ) {
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Row(
@@ -708,21 +778,35 @@ fun RiwayatScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text("Riwayat Transaksi", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = primaryColor)
                 Text("Disinkronkan secara real-time", fontSize = 11.sp, color = Color.Gray)
             }
-            IconButton(
-                onClick = onSync,
-                enabled = !isSyncing,
-                modifier = Modifier
-                    .size(36.dp)
-                    .background(primaryColor.copy(alpha = 0.1f), RoundedCornerShape(10.dp))
-            ) {
-                if (isSyncing) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = primaryColor)
-                } else {
-                    Icon(Icons.Default.Refresh, contentDescription = "Sync", tint = primaryColor, modifier = Modifier.size(20.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val hasCompleted = history.any { it.status.equals("paid", ignoreCase = true) || it.status.equals("expired", ignoreCase = true) || it.status.equals("success", ignoreCase = true) }
+                if (hasCompleted) {
+                    IconButton(
+                        onClick = onClearCompleted,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(Color.Red.copy(alpha = 0.1f), RoundedCornerShape(10.dp))
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = "Hapus Selesai", tint = Color.Red, modifier = Modifier.size(20.dp))
+                    }
+                }
+                
+                IconButton(
+                    onClick = onSync,
+                    enabled = !isSyncing,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .background(primaryColor.copy(alpha = 0.1f), RoundedCornerShape(10.dp))
+                ) {
+                    if (isSyncing) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = primaryColor)
+                    } else {
+                        Icon(Icons.Default.Refresh, contentDescription = "Sync", tint = primaryColor, modifier = Modifier.size(20.dp))
+                    }
                 }
             }
         }
@@ -739,12 +823,12 @@ fun RiwayatScreen(
             }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(history) {
+                items(history) { item ->
                     Surface(
                         color = Color.White,
                         shape = RoundedCornerShape(12.dp),
                         border = BorderStroke(1.dp, Color(0xFFE5E7EB)),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().clickable { onItemClick(item) }
                     ) {
                         Row(
                             modifier = Modifier.padding(16.dp).fillMaxWidth(),
@@ -752,15 +836,39 @@ fun RiwayatScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(it.invoiceId, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(item.category, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFF1F2937))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    
+                                    val (statusColor, statusText) = when (item.status.lowercase()) {
+                                        "paid" -> Color(0xFF10B981) to "Sukses"
+                                        "expired" -> Color(0xFFEF4444) to "Expired"
+                                        else -> Color(0xFFF59E0B) to "Pending"
+                                    }
+                                    
+                                    Surface(
+                                        color = statusColor.copy(alpha = 0.15f),
+                                        shape = RoundedCornerShape(6.dp)
+                                    ) {
+                                        Text(
+                                            text = statusText,
+                                            color = statusColor,
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text("ID: ${item.invoiceId}", fontSize = 11.sp, color = Color.Gray)
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(Date(it.createdAt)),
-                                    fontSize = 12.sp, color = Color.Gray
+                                    SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(Date(item.createdAt)),
+                                    fontSize = 11.sp, color = Color.Gray
                                 )
                             }
                             Column(horizontalAlignment = Alignment.End) {
-                                Text("Rp${it.total}", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 14.sp)
+                                Text("Rp${item.total}", fontWeight = FontWeight.Bold, color = primaryColor, fontSize = 15.sp)
                             }
                         }
                     }
@@ -775,7 +883,7 @@ fun RiwayatScreen(
 fun SaldoScreen(balance: Int, primaryColor: Color, onRefresh: () -> Unit) {
     var showWithdrawSheet by remember { mutableStateOf(false) }
     var isWebViewLoading by remember { mutableStateOf(true) }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val withdrawUrl = "https://api.sairibot.my.id/withdraw"
 
     if (showWithdrawSheet) {
@@ -784,11 +892,11 @@ fun SaldoScreen(balance: Int, primaryColor: Color, onRefresh: () -> Unit) {
             sheetState = sheetState,
             containerColor = Color.White,
             shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-            modifier = Modifier.fillMaxHeight(0.9f)
+            modifier = Modifier.fillMaxHeight(0.92f)
         ) {
-            Column(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+            Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -802,13 +910,22 @@ fun SaldoScreen(balance: Int, primaryColor: Color, onRefresh: () -> Unit) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = primaryColor)
                 }
 
-                Box(modifier = Modifier.fillMaxSize().padding(bottom = 16.dp)) {
+                Box(modifier = Modifier.fillMaxSize().padding(bottom = 24.dp)) {
                     AndroidView(
                         factory = { ctx ->
                             WebView(ctx).apply {
+                                layoutParams = android.view.ViewGroup.LayoutParams(
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                                )
                                 setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
                                 settings.javaScriptEnabled = true
                                 settings.domStorageEnabled = true
+                                settings.useWideViewPort = true
+                                settings.loadWithOverviewMode = true
+                                settings.setSupportZoom(true)
+                                settings.builtInZoomControls = true
+                                settings.displayZoomControls = false
                                 webChromeClient = WebChromeClient()
                                 webViewClient = object : WebViewClient() {
                                     override fun onPageFinished(view: WebView?, url: String?) {
@@ -1037,6 +1154,37 @@ fun InvoiceSection(
             
             Spacer(modifier = Modifier.height(16.dp))
             
+            Surface(
+                color = Color(0xFFF8FAFC),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("ID Transaksi", fontSize = 12.sp, color = Color.Gray)
+                        Text(invoice.invoiceId, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1E293B))
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Nominal", fontSize = 12.sp, color = Color.Gray)
+                        Text("Rp${invoice.amount}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1E293B))
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Biaya Layanan", fontSize = 12.sp, color = Color.Gray)
+                        Text("Rp${invoice.fee}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1E293B))
+                    }
+                    Divider(modifier = Modifier.padding(vertical = 12.dp), color = Color(0xFFE2E8F0))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Total Bayar", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0061A4))
+                        Text("Rp${invoice.total}", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0061A4))
+                    }
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
             Column(modifier = Modifier.fillMaxWidth()) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     ActionCard(icon = "🔄", label = "Cek Status", modifier = Modifier.weight(1f), onClick = onCheckStatus)
@@ -1087,15 +1235,39 @@ fun StatusBadge(status: String) {
 
 @Composable
 fun QrisImage(imageUrl: String, modifier: Modifier = Modifier) {
-    AsyncImage(
-        model = ImageRequest.Builder(LocalContext.current)
-            .data(imageUrl)
-            .crossfade(true)
-            .build(),
-        contentDescription = "QRIS Image",
-        modifier = modifier,
-        contentScale = ContentScale.Fit
-    )
+    var decodedBitmap: android.graphics.Bitmap? = null
+    var isBase64 = false
+
+    if (imageUrl.startsWith("data:image") || (!imageUrl.startsWith("http") && imageUrl.length > 200)) {
+        isBase64 = true
+        try {
+            val base64String = if (imageUrl.contains(",")) imageUrl.substringAfter(",") else imageUrl
+            val decodedBytes = Base64.decode(base64String, Base64.DEFAULT)
+            decodedBitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            isBase64 = false
+        }
+    }
+
+    if (isBase64 && decodedBitmap != null) {
+        Image(
+            bitmap = decodedBitmap.asImageBitmap(),
+            contentDescription = "QRIS Image",
+            modifier = modifier,
+            contentScale = ContentScale.Fit
+        )
+    } else {
+        AsyncImage(
+            model = ImageRequest.Builder(LocalContext.current)
+                .data(imageUrl)
+                .crossfade(true)
+                .build(),
+            contentDescription = "QRIS Image",
+            modifier = modifier,
+            contentScale = ContentScale.Fit
+        )
+    }
 }
 
 fun sendToWhatsApp(context: Context, total: Int, invoiceId: String, qrisUrl: String, appSettings: AppSettings) {
