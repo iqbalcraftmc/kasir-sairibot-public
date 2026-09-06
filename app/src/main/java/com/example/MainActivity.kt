@@ -1,11 +1,13 @@
 package com.iqbalcraftmc.sairibokasir.publicversion
 
+import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Base64
@@ -36,6 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -76,13 +79,108 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.security.KeyFactory
+import java.security.MessageDigest
 import java.security.PublicKey
 import java.security.Signature
 import java.security.spec.X509EncodedKeySpec
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+sealed class LicenseCheckResult {
+    data class Valid(val expMillis: Long, val expFormatted: String, val id: String, val hwid: String) : LicenseCheckResult()
+    data class Expired(val expMillis: Long, val expFormatted: String, val id: String) : LicenseCheckResult()
+    data class HardwareMismatch(val licenseHwid: String, val deviceHwid: String) : LicenseCheckResult()
+    data class Invalid(val reason: String) : LicenseCheckResult()
+}
+
+object LicenseVerifier {
+    private const val PUBLIC_KEY_PEM = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvl79lJYhTyzS7jEcrmZ0\nCNaxITsIfZCJD2C9vj/w9mLLtySamoip6qvH0Baoh4pAyejcgcnly4Ob0BeW0V6U\nS6JP+mhVKJygGmotDZliHUIXEDyvNuYUNG+oM0Z4SwlSg8kZspkMmKBAeJaNAFMb\n1B3UespGSWueQBdMFB+3rxbEvn1yWgLeXJ3ioXsdhv/ollMxAPMTOU1Ht9VMk7SZ\nHN/PaI5ViFZ78MufFni2n/HwJH05Pzvo1PZKCKTbs2CPUjWHQbEL20HnXuLy83Bq\nAqyu0z24aOHY9fGQvVghwgUxcForHAqd0MqEer0eCNUOdliuarEyJBnZVKTf0XuZ\nQQIDAQAB\n-----END PUBLIC KEY-----"
+
+    @SuppressLint("HardwareIds")
+    fun getDeviceHardwareId(context: Context): String {
+        return try {
+            val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown"
+            val buildSig = "${Build.MANUFACTURER}|${Build.MODEL}|${Build.HARDWARE}|${Build.BOARD}|${Build.BRAND}|$androidId"
+            val md = MessageDigest.getInstance("SHA-256")
+            val hash = md.digest(buildSig.toByteArray(StandardCharsets.UTF_8))
+            val hex = hash.joinToString("") { "%02X".format(it) }.substring(0, 16)
+            "${hex.substring(0, 4)}-${hex.substring(4, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}"
+        } catch (e: Exception) {
+            "HWID-DEFAULT-0000"
+        }
+    }
+
+    fun verify(context: Context, licenseKey: String): LicenseCheckResult {
+        return try {
+            val parts = licenseKey.trim().split(".")
+            if (parts.size != 2) return LicenseCheckResult.Invalid("Format lisensi salah")
+
+            val payloadBytes = Base64.decode(parts[0], Base64.URL_SAFE)
+            val payloadJson = String(payloadBytes, StandardCharsets.UTF_8)
+            val sigBytes = Base64.decode(parts[1], Base64.URL_SAFE)
+
+            val cleanKey = PUBLIC_KEY_PEM
+                .replace("-----BEGIN PUBLIC KEY-----", "")
+                .replace("-----END PUBLIC KEY-----", "")
+                .replace("\\s".toRegex(), "")
+            val keySpec = X509EncodedKeySpec(Base64.decode(cleanKey, Base64.DEFAULT))
+            val pubKey = KeyFactory.getInstance("RSA").generatePublic(keySpec)
+
+            val signature = Signature.getInstance("SHA256withRSA")
+            signature.initVerify(pubKey)
+            signature.update(payloadJson.toByteArray(StandardCharsets.UTF_8))
+            if (!signature.verify(sigBytes)) {
+                return LicenseCheckResult.Invalid("Tanda tangan lisensi tidak valid (RSA signature mismatch)!")
+            }
+
+            val json = JSONObject(payloadJson)
+            val exp = json.getLong("exp")
+            val expStr = json.optString("expStr", "")
+            val id = json.optString("id", "")
+            val licenseHwid = json.optString("hwid", "")
+
+            if (licenseHwid.isNotBlank()) {
+                val currentHwid = getDeviceHardwareId(context)
+                val cleanLicHwid = licenseHwid.replace("-", "").replace(" ", "").uppercase(Locale.ROOT)
+                val cleanDevHwid = currentHwid.replace("-", "").replace(" ", "").uppercase(Locale.ROOT)
+                if (cleanLicHwid != cleanDevHwid) {
+                    return LicenseCheckResult.HardwareMismatch(licenseHwid, currentHwid)
+                }
+            }
+
+            if (System.currentTimeMillis() > exp) {
+                LicenseCheckResult.Expired(exp, expStr, id)
+            } else {
+                LicenseCheckResult.Valid(exp, expStr, id, licenseHwid)
+            }
+        } catch (e: Exception) {
+            LicenseCheckResult.Invalid("Error verifikasi: " + e.message)
+        }
+    }
+}
+
+class LicenseManager(context: Context) {
+    private val prefs = context.getSharedPreferences("app_license_prefs", Context.MODE_PRIVATE)
+
+    var savedLicense: String
+        get() = prefs.getString("saved_license_key", "") ?: ""
+        set(value) = prefs.edit().putString("saved_license_key", value.trim()).apply()
+
+    fun clearLicense() {
+        prefs.edit().remove("saved_license_key").apply()
+    }
+
+    fun checkCurrentLicense(context: Context): LicenseCheckResult {
+        val key = savedLicense
+        if (key.isBlank()) {
+            return LicenseCheckResult.Invalid("Aplikasi belum diaktivasi. Silakan masukkan kunci lisensi.")
+        }
+        return LicenseVerifier.verify(context, key)
+    }
+}
 
 class AppSettings(context: Context) {
     private val prefs = context.getSharedPreferences("user_public_config", Context.MODE_PRIVATE)
@@ -485,6 +583,278 @@ class KasirViewModel(application: android.app.Application) : AndroidViewModel(ap
     }
 }
 
+@Composable
+fun LicenseActivationScreen(
+    initialResult: LicenseCheckResult?,
+    onLicenseActivated: (LicenseCheckResult.Valid, String) -> Unit
+) {
+    val context = LocalContext.current
+    val primaryColor = Color(0xFF0061A4)
+    val deviceHwid = remember { LicenseVerifier.getDeviceHardwareId(context) }
+    val clipboardManager = remember { context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager }
+
+    var licenseInput by remember { mutableStateOf("") }
+    var currentResult by remember { mutableStateOf(initialResult) }
+    var isVerifying by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFF1F5F9))
+            .padding(16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 500.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(68.dp)
+                        .background(primaryColor.copy(alpha = 0.1f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Lock,
+                        contentDescription = "Lock",
+                        tint = primaryColor,
+                        modifier = Modifier.size(34.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = "Aktivasi Lisensi Aplikasi",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF0F172A)
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Text(
+                    text = "Aplikasi ini memerlukan lisensi offline RSA yang valid dan terikat pada Hardware ID perangkat ini.",
+                    fontSize = 13.sp,
+                    color = Color(0xFF64748B),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    lineHeight = 18.sp
+                )
+
+                Spacer(modifier = Modifier.height(18.dp))
+
+                when (val res = currentResult) {
+                    is LicenseCheckResult.HardwareMismatch -> {
+                        Surface(
+                            color = Color(0xFFFEF2F2),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0xFFFECACA)),
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    "⚠️ Hardware ID (HWID) Tidak Cocok!",
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFDC2626),
+                                    fontSize = 13.sp
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    "Lisensi ditujukan untuk HWID: ${res.licenseHwid}\nHWID perangkat Anda: ${res.deviceHwid}",
+                                    color = Color(0xFFB91C1C),
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                    is LicenseCheckResult.Expired -> {
+                        Surface(
+                            color = Color(0xFFFFFBEB),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0xFFFDE68A)),
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    "⏳ Masa Berlaku Lisensi Habis!",
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFD97706),
+                                    fontSize = 13.sp
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    "Lisensi ID: ${res.id} telah kedaluwarsa pada ${res.expFormatted}.",
+                                    color = Color(0xFF92400E),
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                    is LicenseCheckResult.Invalid -> {
+                        if (res.reason.isNotBlank()) {
+                            Surface(
+                                color = Color(0xFFFEF2F2),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, Color(0xFFFECACA)),
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+                            ) {
+                                Text(
+                                    "⚠️ ${res.reason}",
+                                    color = Color(0xFFDC2626),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        }
+                    }
+                    else -> {}
+                }
+
+                Surface(
+                    color = Color(0xFFF8FAFC),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(
+                            text = "Hardware ID (HWID) Perangkat Anda",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF475569)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFFE2E8F0), RoundedCornerShape(10.dp))
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = deviceHwid,
+                                fontSize = 14.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF0F172A)
+                            )
+                            IconButton(
+                                onClick = {
+                                    val clip = ClipData.newPlainText("HWID", deviceHwid)
+                                    clipboardManager?.setPrimaryClip(clip)
+                                    Toast.makeText(context, "HWID berhasil disalin!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.ContentCopy,
+                                    contentDescription = "Salin HWID",
+                                    tint = primaryColor,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Kirim HWID ini ke admin pembuat lisensi untuk diaktivasi.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Kunci Lisensi",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF475569)
+                        )
+                        TextButton(
+                            onClick = {
+                                val clipText = clipboardManager?.primaryClip?.getItemAt(0)?.text?.toString()
+                                if (!clipText.isNullOrBlank()) {
+                                    licenseInput = clipText.trim()
+                                    Toast.makeText(context, "Kunci lisensi ditempel!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "Clipboard kosong", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("📋 Tempel", fontSize = 12.sp, color = primaryColor, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value = licenseInput,
+                        onValueChange = { licenseInput = it },
+                        placeholder = { Text("Tempel kunci lisensi di sini (payload.signature)", fontSize = 12.sp, color = Color.Gray) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 90.dp, max = 130.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp
+                        )
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Button(
+                    onClick = {
+                        val trimmed = licenseInput.trim()
+                        if (trimmed.isBlank()) {
+                            currentResult = LicenseCheckResult.Invalid("Kunci lisensi tidak boleh kosong")
+                            return@Button
+                        }
+                        isVerifying = true
+                        val res = LicenseVerifier.verify(context, trimmed)
+                        isVerifying = false
+                        currentResult = res
+                        if (res is LicenseCheckResult.Valid) {
+                            Toast.makeText(context, "✅ Lisensi Berhasil Diaktifkan!", Toast.LENGTH_SHORT).show()
+                            onLicenseActivated(res, trimmed)
+                        }
+                    },
+                    enabled = licenseInput.isNotBlank() && !isVerifying,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = primaryColor)
+                ) {
+                    if (isVerifying) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
+                    } else {
+                        Text("Verifikasi & Aktifkan", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -492,7 +862,45 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             MaterialTheme {
-                KasirQrisScreen()
+                val context = LocalContext.current
+                val licenseManager = remember { LicenseManager(context) }
+                var licenseCheckResult by remember { mutableStateOf<LicenseCheckResult?>(null) }
+                var isVerifyingInitial by remember { mutableStateOf(true) }
+
+                LaunchedEffect(Unit) {
+                    licenseCheckResult = licenseManager.checkCurrentLicense(context)
+                    isVerifyingInitial = false
+                }
+
+                if (isVerifyingInitial) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0xFFF3F4F9)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = Color(0xFF0061A4))
+                    }
+                } else {
+                    val activeResult = licenseCheckResult
+                    if (activeResult is LicenseCheckResult.Valid) {
+                        KasirQrisScreen(
+                            licenseInfo = activeResult,
+                            onRelock = {
+                                licenseManager.clearLicense()
+                                licenseCheckResult = LicenseCheckResult.Invalid("Lisensi telah dinonaktifkan")
+                            }
+                        )
+                    } else {
+                        LicenseActivationScreen(
+                            initialResult = activeResult,
+                            onLicenseActivated = { validResult, newKey ->
+                                licenseManager.savedLicense = newKey
+                                licenseCheckResult = validResult
+                            }
+                        )
+                    }
+                }
             }
         }
     }
@@ -516,7 +924,11 @@ enum class BottomTab { HOME, RIWAYAT, SALDO, PROFIL }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun KasirQrisScreen(viewModel: KasirViewModel = viewModel()) {
+fun KasirQrisScreen(
+    viewModel: KasirViewModel = viewModel(),
+    licenseInfo: LicenseCheckResult.Valid? = null,
+    onRelock: () -> Unit = {}
+) {
     val primaryColor = Color(0xFF0061A4)
     val bgColor = Color(0xFFF3F4F9)
     val textColor = Color(0xFF1B1B1F)
@@ -757,7 +1169,12 @@ fun KasirQrisScreen(viewModel: KasirViewModel = viewModel()) {
                     LaunchedEffect(Unit) { viewModel.fetchBalance() }
                     SaldoScreen(balance, primaryColor) { viewModel.fetchBalance() }
                 }
-                BottomTab.PROFIL -> ProfilScreen(primaryColor, viewModel)
+                BottomTab.PROFIL -> ProfilScreen(
+                    primaryColor = primaryColor,
+                    viewModel = viewModel,
+                    licenseInfo = licenseInfo,
+                    onRelock = onRelock
+                )
             }
         }
     }
@@ -970,7 +1387,12 @@ fun SaldoScreen(balance: Int, primaryColor: Color, onRefresh: () -> Unit) {
 }
 
 @Composable
-fun ProfilScreen(primaryColor: Color, viewModel: KasirViewModel) {
+fun ProfilScreen(
+    primaryColor: Color,
+    viewModel: KasirViewModel,
+    licenseInfo: LicenseCheckResult.Valid? = null,
+    onRelock: () -> Unit = {}
+) {
     val context = LocalContext.current
     val appSettings = viewModel.appSettings
 
@@ -992,7 +1414,91 @@ fun ProfilScreen(primaryColor: Color, viewModel: KasirViewModel) {
         Text("SairiBot Kasir (Publik)", fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text("Atur API Key & Link GitHub Anda di bawah ini", color = Color.Gray, fontSize = 12.sp)
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Card Status Lisensi & HWID
+        Surface(
+            color = Color.White,
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, Color(0xFFE5E7EB)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("🔐 Status Lisensi Offline", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = primaryColor)
+                    Surface(
+                        color = Color(0xFFECFDF5),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, Color(0xFFA7F3D0))
+                    ) {
+                        Text(
+                            text = "Aktif",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF059669),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                val hwid = remember { LicenseVerifier.getDeviceHardwareId(context) }
+                Text("Hardware ID (HWID) Perangkat:", fontSize = 11.sp, color = Color.Gray)
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFFF1F5F9), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(hwid, fontFamily = FontFamily.Monospace, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    IconButton(
+                        onClick = {
+                            val clipMgr = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                            clipMgr?.setPrimaryClip(ClipData.newPlainText("HWID", hwid))
+                            Toast.makeText(context, "HWID disalin ke clipboard!", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "Salin HWID", tint = primaryColor, modifier = Modifier.size(16.dp))
+                    }
+                }
+
+                if (licenseInfo != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("ID Lisensi:", fontSize = 12.sp, color = Color.Gray)
+                        Text(licenseInfo.id.ifBlank { "OFFLINE-RSA" }, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Masa Berlaku:", fontSize = 12.sp, color = Color.Gray)
+                        Text(licenseInfo.expFormatted.ifBlank { "Permanen / Valid" }, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF059669))
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                OutlinedButton(
+                    onClick = onRelock,
+                    modifier = Modifier.fillMaxWidth().height(38.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
+                    border = BorderStroke(1.dp, Color(0xFFFCA5A5))
+                ) {
+                    Text("🔓 Ganti / Nonaktifkan Lisensi", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
 
         Surface(
             color = Color.White,
