@@ -25,6 +25,14 @@ Setelah mendapatkan data tersebut, ikuti langkah-langkah berikut untuk mengaturn
 
 Bagi yang membutuhkan sistem pembayaran jarak jauh, Anda dapat menggunakan templat web pendukung di [https://github.com/iqbalcraftmc/bayar.github.io](https://github.com/iqbalcraftmc/bayar.github.io). Anda cukup menyesuaikan API Key pada templat tersebut untuk mulai menggunakannya.
 
+## Pengembang & Hak Cipta
+
+Aplikasi ini dirancang, dibuat, dan dikembangkan sepenuhnya oleh **iqbalcraftmc**:
+- **Website:** [https://iqbalcraftmc.github.io/](https://iqbalcraftmc.github.io/)
+- **GitHub:** [https://github.com/iqbalcraftmc](https://github.com/iqbalcraftmc)
+
+Copyright &copy; 2026 **iqbalcraftmc**. All rights reserved.
+
 ## Lisensi
 
-Proyek ini dilindungi di bawah Lisensi MIT. Silakan lihat file LISENSI untuk informasi lebih lanjut.
+Proyek ini dilindungi di bawah Lisensi MIT. Silakan lihat file [LICENSE](LICENSE) untuk informasi lebih lanjut.

@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">SairiBot Kasir</string>
+    <string name="app_author">iqbalcraftmc</string>
+    <string name="app_copyright">Copyright © 2026 iqbalcraftmc. All rights reserved.</string>
 </resources>

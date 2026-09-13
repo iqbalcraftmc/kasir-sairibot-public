@@ -850,6 +850,16 @@ fun LicenseActivationScreen(
                         Text("Verifikasi & Aktifkan", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     }
                 }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Text(
+                    text = "Aplikasi dibuat & dikembangkan oleh iqbalcraftmc\n© 2026 iqbalcraftmc. All rights reserved.",
+                    fontSize = 11.sp,
+                    color = Color(0xFF64748B),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    lineHeight = 16.sp
+                )
             }
         }
     }
@@ -1605,6 +1615,93 @@ fun ProfilScreen(
                         Text("🚀 Buat Repo Baru", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                     }
                 }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Card Hak Cipta & Kredit Pengembang
+        Surface(
+            color = Color.White,
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Text("💎", fontSize = 16.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Hak Cipta & Pengembang",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = Color(0xFF0F172A)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Aplikasi ini dirancang, dibuat, dan dikembangkan oleh:",
+                    fontSize = 12.sp,
+                    color = Color(0xFF64748B),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = "iqbalcraftmc",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = primaryColor
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://iqbalcraftmc.github.io/"))
+                            context.startActivity(intent)
+                        },
+                        modifier = Modifier.weight(1f).height(36.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.5f))
+                    ) {
+                        Text("🌐 Website", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = primaryColor)
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/iqbalcraftmc"))
+                            context.startActivity(intent)
+                        },
+                        modifier = Modifier.weight(1f).height(36.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, Color(0xFF334155))
+                    ) {
+                        Text("🐙 GitHub", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF334155))
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "© 2026 iqbalcraftmc. All rights reserved.",
+                    fontSize = 11.sp,
+                    color = Color(0xFF94A3B8),
+                    fontWeight = FontWeight.Medium
+                )
             }
         }
     }
