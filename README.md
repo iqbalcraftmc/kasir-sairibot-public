@@ -11,8 +11,8 @@ Cara Mendapatkan Token Lisensi & API Key
 
 Versi publik aplikasi ini memerlukan token lisensi dan API Key SairiBot agar dapat berfungsi.
 
-1. Kunjungi halaman resmi "SairiBot API" (https://api.sairibot.my.id/profile) untuk membuat/mengakses akun dan mendapatkan API Key milik Anda sendiri.
-2. Kunjungi "website pengembang" (https://iqbalcraftmc.github.io/) untuk menghubungi saya dan mendapatkan token lisensi akses aplikasi.
+1. Kunjungi halaman resmi SairiBot API https://api.sairibot.my.id/profile untuk membuat/mengakses akun dan mendapatkan API Key milik Anda sendiri.
+2. Kunjungi website pengembang https://iqbalcraftmc.github.io/ untuk menghubungi saya dan mendapatkan token lisensi akses aplikasi.
 
 «⚠️ Penting: Setiap pengguna wajib menggunakan API Key dari akun SairiBot miliknya sendiri. Jangan menggunakan API Key milik pengembang untuk transaksi Anda.»
 
@@ -49,8 +49,8 @@ Pengembang & Hak Cipta
 
 Aplikasi ini dirancang, dibuat, dan dikembangkan sepenuhnya oleh iqbalcraftmc:
 
-- Website: "iqbalcraftmc.github.io" (https://iqbalcraftmc.github.io/)
-- GitHub: "github.com/iqbalcraftmc" (https://github.com/iqbalcraftmc)
+- Website: "iqbalcraftmc.github.io" https://iqbalcraftmc.github.io/
+- GitHub: "github.com/iqbalcraftmc" https://github.com/iqbalcraftmc
 
 Copyright © 2026 iqbalcraftmc. All rights reserved.
 
