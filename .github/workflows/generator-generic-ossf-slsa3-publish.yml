@@ -35,6 +35,8 @@ jobs:
             # These are some amazing artifacts.
             echo "artifact1" > artifact1
             echo "artifact2" > artifact2
+      - name: Upload a Build Artifact
+  uses: actions/upload-artifact@v7.0.2
 
       # ========================================================
       #
