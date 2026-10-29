@@ -25,20 +25,42 @@ Setelah mendapatkan data tersebut, ikuti langkah-langkah berikut untuk mengaturn
 3. Masukkan token lisensi serta API Key SairiBot milik Anda sendiri pada kolom yang telah disediakan.
 4. Simpan pengaturan agar aplikasi siap digunakan untuk bertransaksi.
 
-# Templat Pembayaran Jarak Jauh (Bayar)
+# 🌐 Templat Pembayaran Jarak Jauh (Self-Hosted)
 
-Bagi yang membutuhkan sistem pembayaran jarak jauh, Anda dapat menggunakan templat web pendukung di "bayar.github.io" (https://github.com/iqbalcraftmc/bayar.github.io).
+Aplikasi SairiBot Kasir mendukung sistem pembayaran jarak jauh melalui web templat yang disetup secara mandiri oleh masing-masing pengguna. Hal ini bertujuan agar penggunaan API Key dan kuota transaksi terpisah secara independen.
 
-Templat tersebut bersifat Open Source dan dapat disesuaikan dengan kebutuhan Anda.
+Anda dapat menggunakan dan mem-fork templat web resmi kami dari repositori GitHub:
+👉 [bayar.github.io](https://github.com/iqbalcraftmc/bayar.github.io)
 
-# 🔑 Konfigurasi API Key pada Templat
+---
 
-Jika Anda menyalin atau melakukan fork templat pembayaran tersebut untuk penggunaan Anda sendiri, ganti API Key yang ditandai di dalam kode dengan API Key SairiBot milik Anda sendiri.
+## 🚀 Pilihan Layanan Hosting (Deployment)
 
-Pada kode JavaScript, cari bagian yang memiliki penanda:
+Anda bebas mengunggah (*deploy*) templat tersebut ke beberapa platform hosting gratis berikut:
 
-// ⚠️ OPEN SOURCE - GANTI API KEY DENGAN API KEY ANDA SENDIRI
+1. **Cloudflare Pages (Sangat Direkomendasikan)**
+   - **Kelebihan**: Loading super cepat, dukungan *Custom Domain* gratis (`.pages.dev`), dan manajemen *environment variable* yang lebih aman.
+   - **Cara Setup**: 
+     1. Login ke [Cloudflare Dashboard](https://dash.cloudflare.com/).
+     2. Masuk ke menu **Workers & Pages** > **Create application** > **Pages** > **Connect to Git**.
+     3. Pilih repositori `bayar.github.io` hasil fork Anda lalu tekan **Save and Deploy**.
 
+2. **GitHub Pages**
+   - **Cara Setup**: Masuk ke repositori hasil fork Anda di GitHub > **Settings** > **Pages** > Pada bagian *Source*, pilih cabang `main` lalu simpan.
+
+3. **Custom Domain Pribadi**
+   - Jika Anda memiliki domain sendiri (contoh: `https://kasir.tokoanda.com`), Anda dapat menghubungkannya ke Cloudflare Pages atau GitHub Pages di atas.
+
+---
+
+## 🔑 Konfigurasi API Key & URL Kustom
+
+1. Buka berkas `index.html` atau skrip konfigurasi pada templat web Anda.
+2. Cari bagian berikut dan ganti dengan **API Key SairiBot milik Anda sendiri**:
+   ```javascript
+   // ⚠️ GANTI DENGAN API KEY SAIRIBOT ANDA
+   const API_KEY = "API_KEY_ANDA_DI_SINI";
+   
 Kemudian ganti API Key pada baris "fetch()" dengan API Key dari akun SairiBot Anda.
 
 «Catatan: API Key terhubung dengan akun SairiBot yang menggunakannya. Gunakan API Key akun Anda sendiri agar transaksi dan pemeriksaan status pembayaran menggunakan akun Anda.»
