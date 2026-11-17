@@ -89,6 +89,10 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+// ============================================================================
+// Kode Verifikasi Lisensi RSA Offline + Validasi Hardware ID untuk Aplikasi Klien
+// ============================================================================
+
 sealed class LicenseCheckResult {
     data class Valid(val expMillis: Long, val expFormatted: String, val id: String, val hwid: String) : LicenseCheckResult()
     data class Expired(val expMillis: Long, val expFormatted: String, val id: String) : LicenseCheckResult()
@@ -97,7 +101,9 @@ sealed class LicenseCheckResult {
 }
 
 object LicenseVerifier {
-    private const val PUBLIC_KEY_PEM = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvl79lJYhTyzS7jEcrmZ0\nCNaxITsIfZCJD2C9vj/w9mLLtySamoip6qvH0Baoh4pAyejcgcnly4Ob0BeW0V6U\nS6JP+mhVKJygGmotDZliHUIXEDyvNuYUNG+oM0Z4SwlSg8kZspkMmKBAeJaNAFMb\n1B3UespGSWueQBdMFB+3rxbEvn1yWgLeXJ3ioXsdhv/ollMxAPMTOU1Ht9VMk7SZ\nHN/PaI5ViFZ78MufFni2n/HwJH05Pzvo1PZKCKTbs2CPUjWHQbEL20HnXuLy83Bq\nAqyu0z24aOHY9fGQvVghwgUxcForHAqd0MqEer0eCNUOdliuarEyJBnZVKTf0XuZ\nQQIDAQAB\n-----END PUBLIC KEY-----"
+
+    // Public Key yang diekspor dari aplikasi pembuat (Generator)
+    private const val PUBLIC_KEY_PEM = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAi2JMpX/y/xbiTXgM+L0Q\np3V+BwMO56j9gYAkOZvEM0pHPYKyJ0wHjBq7mtPuJFpCPFUbIZSTqtyFkQA1NTQI\nMdWkjXc2KaY8rVBXpj6cHg0g/0/0yEkQ+bTslD6vOaKGx7RmTG2m6AQnv6/vxQ3H\n1CCPUWdYr4uYU6n3MqtQOhlkMsdH/ZwLg2Jspzg5FXBPvfcKpoRj/2CHWgXBT6Sg\n7y+X97H2EChknB5A/NuDxIbX6IIY6R7id1ktmqSTnZysP0VJXn687XR0STSV7XIj\nFqsCfUTiUT6XrIdXMM7BgeAJhSO3y2CVQrhBlbWmTLofI+DKyJFYwmHZDVt9mqEQ\n3wIDAQAB\n-----END PUBLIC KEY-----"
 
     @SuppressLint("HardwareIds")
     fun getDeviceHardwareId(context: Context): String {
@@ -122,6 +128,7 @@ object LicenseVerifier {
             val payloadJson = String(payloadBytes, StandardCharsets.UTF_8)
             val sigBytes = Base64.decode(parts[1], Base64.URL_SAFE)
 
+            // Parse Public Key
             val cleanKey = PUBLIC_KEY_PEM
                 .replace("-----BEGIN PUBLIC KEY-----", "")
                 .replace("-----END PUBLIC KEY-----", "")
@@ -129,6 +136,7 @@ object LicenseVerifier {
             val keySpec = X509EncodedKeySpec(Base64.decode(cleanKey, Base64.DEFAULT))
             val pubKey = KeyFactory.getInstance("RSA").generatePublic(keySpec)
 
+            // 1. Verifikasi Tanda Tangan Digital RSA
             val signature = Signature.getInstance("SHA256withRSA")
             signature.initVerify(pubKey)
             signature.update(payloadJson.toByteArray(StandardCharsets.UTF_8))
@@ -142,6 +150,7 @@ object LicenseVerifier {
             val id = json.optString("id", "")
             val licenseHwid = json.optString("hwid", "")
 
+            // 2. Validasi Hardware ID
             if (licenseHwid.isNotBlank()) {
                 val currentHwid = getDeviceHardwareId(context)
                 val cleanLicHwid = licenseHwid.replace("-", "").replace(" ", "").uppercase(Locale.ROOT)
@@ -151,6 +160,7 @@ object LicenseVerifier {
                 }
             }
 
+            // 3. Validasi Masa Berlaku
             if (System.currentTimeMillis() > exp) {
                 LicenseCheckResult.Expired(exp, expStr, id)
             } else {
@@ -182,12 +192,76 @@ class LicenseManager(context: Context) {
     }
 }
 
+fun resolvePaymentUrl(
+    platform: String,
+    cfSubdomain: String,
+    ghUser: String,
+    ghRepo: String,
+    customUrl: String
+): String {
+    return when (platform.trim().lowercase()) {
+        "cloudflare" -> {
+            val sub = cfSubdomain.trim()
+            if (sub.isEmpty()) {
+                ""
+            } else if (sub.startsWith("http://") || sub.startsWith("https://")) {
+                if (sub.endsWith("/")) sub else "$sub/"
+            } else if (sub.endsWith(".pages.dev")) {
+                "https://$sub/"
+            } else {
+                "https://$sub.pages.dev/"
+            }
+        }
+        "github" -> {
+            val user = ghUser.trim()
+            val repo = ghRepo.trim().ifBlank { "bayar.github.io" }
+            if (user.isEmpty()) {
+                ""
+            } else {
+                "https://$user.github.io/$repo/"
+            }
+        }
+        "custom" -> {
+            val custom = customUrl.trim()
+            if (custom.isEmpty()) {
+                ""
+            } else if (custom.startsWith("http://") || custom.startsWith("https://")) {
+                if (custom.endsWith("/")) custom else "$custom/"
+            } else {
+                "https://$custom/"
+            }
+        }
+        else -> {
+            val custom = customUrl.trim()
+            if (custom.isNotEmpty()) {
+                if (custom.endsWith("/")) custom else "$custom/"
+            } else if (ghUser.isNotBlank()) {
+                "https://${ghUser.trim()}.github.io/${ghRepo.trim().ifBlank { "bayar.github.io" }}/"
+            } else {
+                ""
+            }
+        }
+    }
+}
+
 class AppSettings(context: Context) {
     private val prefs = context.getSharedPreferences("user_public_config", Context.MODE_PRIVATE)
 
     var apiKey: String
         get() = prefs.getString("user_api_key", "") ?: ""
         set(value) = prefs.edit().putString("user_api_key", value.trim()).apply()
+
+    var paymentPlatform: String
+        get() = prefs.getString("user_payment_platform", "cloudflare") ?: "cloudflare"
+        set(value) = prefs.edit().putString("user_payment_platform", value.trim().lowercase()).apply()
+
+    var cloudflareSubdomain: String
+        get() = prefs.getString("user_cloudflare_subdomain", "") ?: ""
+        set(value) = prefs.edit().putString("user_cloudflare_subdomain", value.trim()).apply()
+
+    var customPaymentUrl: String
+        get() = prefs.getString("user_custom_payment_url", "") ?: ""
+        set(value) = prefs.edit().putString("user_custom_payment_url", value.trim()).apply()
 
     var githubUser: String
         get() = prefs.getString("user_github_user", "") ?: ""
@@ -198,11 +272,7 @@ class AppSettings(context: Context) {
         set(value) = prefs.edit().putString("user_github_repo", value.trim()).apply()
 
     val paymentBaseUrl: String
-        get() = if (githubUser.isNotEmpty()) {
-            "https://$githubUser.github.io/$githubRepo/"
-        } else {
-            ""
-        }
+        get() = resolvePaymentUrl(paymentPlatform, cloudflareSubdomain, githubUser, githubRepo, customPaymentUrl)
 
     var isNotificationMuted: Boolean
         get() = prefs.getBoolean("is_notification_muted", false)
@@ -271,10 +341,13 @@ data class Invoice(
 )
 
 object ApiService {
+    const val IS_API_ENABLED = false
+    const val API_DISABLED_MESSAGE = "API SairiBot Kasir sedang dinonaktifkan sementara."
+
     private val client = OkHttpClient()
 
     suspend fun createInvoice(amount: String, apiKey: String): Invoice? = withContext(Dispatchers.IO) {
-        if (apiKey.isBlank()) return@withContext null
+        if (!IS_API_ENABLED || apiKey.isBlank()) return@withContext null
         val url = "https://api.sairibot.my.id/api/invoice?apikey=$apiKey&amount=$amount"
         val request = Request.Builder().url(url).build()
         try {
@@ -309,7 +382,7 @@ object ApiService {
     }
 
     suspend fun checkStatus(invoiceId: String, apiKey: String): String = withContext(Dispatchers.IO) {
-        if (apiKey.isBlank()) return@withContext "pending"
+        if (!IS_API_ENABLED || apiKey.isBlank()) return@withContext "pending"
         val url = "https://api.sairibot.my.id/api/invoice/status?apikey=$apiKey&invoice_id=$invoiceId"
         val request = Request.Builder().url(url).build()
         try {
@@ -328,7 +401,7 @@ object ApiService {
     }
 
     suspend fun getBalance(apiKey: String): Int = withContext(Dispatchers.IO) {
-        if (apiKey.isBlank()) return@withContext 0
+        if (!IS_API_ENABLED || apiKey.isBlank()) return@withContext 0
         val url = "https://api.sairibot.my.id/api/balance?apikey=$apiKey"
         val request = Request.Builder().url(url).build()
         try {
@@ -347,7 +420,7 @@ object ApiService {
     }
 
     suspend fun fetchTransactionHistory(apiKey: String): List<InvoiceEntity>? = withContext(Dispatchers.IO) {
-        if (apiKey.isBlank()) return@withContext null
+        if (!IS_API_ENABLED || apiKey.isBlank()) return@withContext null
         val endpoints = listOf(
             "https://api.sairibot.my.id/api/invoice/history?apikey=$apiKey",
             "https://api.sairibot.my.id/api/history?apikey=$apiKey",
@@ -439,6 +512,7 @@ class KasirViewModel(application: android.app.Application) : AndroidViewModel(ap
 
 
     fun fetchBalance() {
+        if (!ApiService.IS_API_ENABLED) return
         viewModelScope.launch {
             _apiBalance.value = ApiService.getBalance(appSettings.apiKey)
         }
@@ -463,6 +537,10 @@ class KasirViewModel(application: android.app.Application) : AndroidViewModel(ap
     }
 
     fun generateQris() {
+        if (!ApiService.IS_API_ENABLED) {
+            _isLoading.value = false
+            return
+        }
         viewModelScope.launch {
             _isLoading.value = true
             _invoice.value = null
@@ -488,6 +566,7 @@ class KasirViewModel(application: android.app.Application) : AndroidViewModel(ap
     }
 
     fun checkStatusManually() {
+        if (!ApiService.IS_API_ENABLED) return
         val id = _invoice.value?.invoiceId ?: return
         viewModelScope.launch {
             val currentStatus = ApiService.checkStatus(id, appSettings.apiKey)
@@ -500,6 +579,7 @@ class KasirViewModel(application: android.app.Application) : AndroidViewModel(ap
     }
 
     private fun startPolling(invoiceId: String) {
+        if (!ApiService.IS_API_ENABLED) return
         pollingJob = viewModelScope.launch {
             while (isActive) {
                 delay(5000)
@@ -532,6 +612,10 @@ class KasirViewModel(application: android.app.Application) : AndroidViewModel(ap
     }
 
     fun syncTransactionHistory() {
+        if (!ApiService.IS_API_ENABLED) {
+            _isSyncingHistory.value = false
+            return
+        }
         viewModelScope.launch {
             _isSyncingHistory.value = true
             try {
@@ -1008,7 +1092,7 @@ fun KasirQrisScreen(
                                 letterSpacing = (-0.5).sp
                             )
                             Text(
-                                text = "PUBLIC EDITION V2.4",
+                                text = "PUBLIC EDITION V2.6.0",
                                 color = Color(0xFF94A3B8),
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.SemiBold,
@@ -1065,6 +1149,10 @@ fun KasirQrisScreen(
                             .verticalScroll(rememberScrollState()),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
+                        if (!ApiService.IS_API_ENABLED) {
+                            ApiMaintenanceBanner(modifier = Modifier.padding(bottom = 16.dp))
+                        }
+
                         Surface(
                             color = Color.White,
                             shape = RoundedCornerShape(28.dp),
@@ -1123,11 +1211,13 @@ fun KasirQrisScreen(
                                     elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp, pressedElevation = 2.dp),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = primaryColor,
-                                        disabledContainerColor = primaryColor.copy(alpha = 0.5f)
+                                        disabledContainerColor = Color(0xFF94A3B8)
                                     ),
-                                    enabled = !isLoading && amount.isNotBlank()
+                                    enabled = ApiService.IS_API_ENABLED && !isLoading && amount.isNotBlank()
                                 ) {
-                                    if (isLoading) {
+                                    if (!ApiService.IS_API_ENABLED) {
+                                        Text("⏸️ API Dinonaktifkan Sementara", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White)
+                                    } else if (isLoading) {
                                         CircularProgressIndicator(
                                             modifier = Modifier.size(24.dp),
                                             color = Color.White,
@@ -1150,7 +1240,13 @@ fun KasirQrisScreen(
                             InvoiceSection(
                                 invoice = invoice!!,
                                 status = status,
-                                onCheckStatus = { viewModel.checkStatusManually() },
+                                onCheckStatus = {
+                                    if (!ApiService.IS_API_ENABLED) {
+                                        Toast.makeText(context, ApiService.API_DISABLED_MESSAGE, Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        viewModel.checkStatusManually()
+                                    }
+                                },
                                 onDone = { viewModel.clearInvoice() },
                                 context = context,
                                 appSettings = viewModel.appSettings
@@ -1160,14 +1256,22 @@ fun KasirQrisScreen(
                 }
                 BottomTab.RIWAYAT -> {
                     LaunchedEffect(Unit) {
-                        viewModel.syncTransactionHistory()
+                        if (ApiService.IS_API_ENABLED) {
+                            viewModel.syncTransactionHistory()
+                        }
                     }
                     val isSyncing by viewModel.isSyncingHistory.collectAsState()
                     RiwayatScreen(
                         history = history,
                         primaryColor = primaryColor,
                         isSyncing = isSyncing,
-                        onSync = { viewModel.syncTransactionHistory() },
+                        onSync = {
+                            if (!ApiService.IS_API_ENABLED) {
+                                Toast.makeText(context, ApiService.API_DISABLED_MESSAGE, Toast.LENGTH_SHORT).show()
+                            } else {
+                                viewModel.syncTransactionHistory()
+                            }
+                        },
                         onItemClick = { invoiceEntity ->
                             viewModel.loadInvoiceFromHistory(invoiceEntity)
                             currentTab = BottomTab.HOME
@@ -1176,14 +1280,57 @@ fun KasirQrisScreen(
                     )
                 }
                 BottomTab.SALDO -> {
-                    LaunchedEffect(Unit) { viewModel.fetchBalance() }
-                    SaldoScreen(balance, primaryColor) { viewModel.fetchBalance() }
+                    LaunchedEffect(Unit) {
+                        if (ApiService.IS_API_ENABLED) {
+                            viewModel.fetchBalance()
+                        }
+                    }
+                    SaldoScreen(balance, primaryColor) {
+                        if (ApiService.IS_API_ENABLED) {
+                            viewModel.fetchBalance()
+                        } else {
+                            Toast.makeText(context, ApiService.API_DISABLED_MESSAGE, Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 }
                 BottomTab.PROFIL -> ProfilScreen(
                     primaryColor = primaryColor,
                     viewModel = viewModel,
                     licenseInfo = licenseInfo,
                     onRelock = onRelock
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun ApiMaintenanceBanner(modifier: Modifier = Modifier) {
+    Surface(
+        color = Color(0xFFFFFBEB),
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, Color(0xFFFDE68A)),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Text("⚠️", fontSize = 18.sp)
+            Spacer(modifier = Modifier.width(10.dp))
+            Column {
+                Text(
+                    text = "API SairiBot Kasir Dinonaktifkan Sementara",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF92400E)
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Layanan server API (pembuatan QRIS, cek status, sinkronisasi, dan penarikan saldo) sedang dinonaktifkan sementara. Riwayat transaksi lokal tetap tersedia.",
+                    fontSize = 11.sp,
+                    color = Color(0xFFB45309),
+                    lineHeight = 16.sp
                 )
             }
         }
@@ -1207,7 +1354,11 @@ fun RiwayatScreen(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("Riwayat Transaksi", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = primaryColor)
-                Text("Disinkronkan secara real-time", fontSize = 11.sp, color = Color.Gray)
+                Text(
+                    if (ApiService.IS_API_ENABLED) "Disinkronkan secara real-time" else "Mode offline • Data lokal perangkat",
+                    fontSize = 11.sp,
+                    color = Color.Gray
+                )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 val hasCompleted = history.any { it.status.equals("paid", ignoreCase = true) || it.status.equals("expired", ignoreCase = true) || it.status.equals("success", ignoreCase = true) }
@@ -1227,15 +1378,28 @@ fun RiwayatScreen(
                     enabled = !isSyncing,
                     modifier = Modifier
                         .size(36.dp)
-                        .background(primaryColor.copy(alpha = 0.1f), RoundedCornerShape(10.dp))
+                        .background(
+                            if (ApiService.IS_API_ENABLED) primaryColor.copy(alpha = 0.1f) else Color(0xFFE2E8F0),
+                            RoundedCornerShape(10.dp)
+                        )
                 ) {
                     if (isSyncing) {
                         CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = primaryColor)
                     } else {
-                        Icon(Icons.Default.Refresh, contentDescription = "Sync", tint = primaryColor, modifier = Modifier.size(20.dp))
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = "Sync",
+                            tint = if (ApiService.IS_API_ENABLED) primaryColor else Color(0xFF94A3B8),
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
             }
+        }
+
+        if (!ApiService.IS_API_ENABLED) {
+            Spacer(modifier = Modifier.height(12.dp))
+            ApiMaintenanceBanner()
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -1313,7 +1477,7 @@ fun SaldoScreen(balance: Int, primaryColor: Color, onRefresh: () -> Unit) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val withdrawUrl = "https://api.sairibot.my.id/withdraw"
 
-    if (showWithdrawSheet) {
+    if (showWithdrawSheet && ApiService.IS_API_ENABLED) {
         ModalBottomSheet(
             onDismissRequest = { showWithdrawSheet = false },
             sheetState = sheetState,
@@ -1374,24 +1538,43 @@ fun SaldoScreen(balance: Int, primaryColor: Color, onRefresh: () -> Unit) {
         modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        if (!ApiService.IS_API_ENABLED) {
+            ApiMaintenanceBanner(modifier = Modifier.padding(bottom = 16.dp))
+        }
+
         Text("Total Saldo Tersedia", fontSize = 16.sp, color = Color.Gray)
         Spacer(modifier = Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Rp$balance", fontSize = 36.sp, fontWeight = FontWeight.Bold, color = primaryColor)
             Spacer(modifier = Modifier.width(8.dp))
-            IconButton(onClick = onRefresh) {
-                Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = primaryColor)
+            IconButton(
+                onClick = onRefresh,
+                enabled = ApiService.IS_API_ENABLED
+            ) {
+                Icon(
+                    Icons.Default.Refresh,
+                    contentDescription = "Refresh",
+                    tint = if (ApiService.IS_API_ENABLED) primaryColor else Color(0xFF94A3B8)
+                )
             }
         }
         
         Spacer(modifier = Modifier.height(24.dp))
         Button(
             onClick = { showWithdrawSheet = true },
+            enabled = ApiService.IS_API_ENABLED,
             modifier = Modifier.fillMaxWidth().height(48.dp),
             shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = primaryColor)
+            colors = ButtonDefaults.buttonColors(
+                containerColor = primaryColor,
+                disabledContainerColor = Color(0xFF94A3B8)
+            )
         ) {
-            Text("🌐 Penarikan Saldo", fontWeight = FontWeight.Bold)
+            Text(
+                if (ApiService.IS_API_ENABLED) "🌐 Penarikan Saldo" else "⏸️ Penarikan Saldo Dinonaktifkan",
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
         }
     }
 }
@@ -1407,8 +1590,15 @@ fun ProfilScreen(
     val appSettings = viewModel.appSettings
 
     var apiKeyInput by remember { mutableStateOf(appSettings.apiKey) }
+    var selectedPlatform by remember { mutableStateOf(appSettings.paymentPlatform) }
+    var cfSubdomainInput by remember { mutableStateOf(appSettings.cloudflareSubdomain) }
     var ghUserInput by remember { mutableStateOf(appSettings.githubUser) }
     var ghRepoInput by remember { mutableStateOf(appSettings.githubRepo) }
+    var customUrlInput by remember { mutableStateOf(appSettings.customPaymentUrl) }
+
+    val currentPreviewUrl = remember(selectedPlatform, cfSubdomainInput, ghUserInput, ghRepoInput, customUrlInput) {
+        resolvePaymentUrl(selectedPlatform, cfSubdomainInput, ghUserInput, ghRepoInput, customUrlInput)
+    }
 
     Column(
         modifier = Modifier
@@ -1522,43 +1712,152 @@ fun ProfilScreen(
 
                 OutlinedTextField(
                     value = apiKeyInput,
-                    onValueChange = { apiKeyInput = it },
+                    onValueChange = { if (ApiService.IS_API_ENABLED) apiKeyInput = it },
+                    readOnly = !ApiService.IS_API_ENABLED,
                     label = { Text("API Key SairiBot") },
                     placeholder = { Text("Masukkan API Key Anda") },
+                    supportingText = if (!ApiService.IS_API_ENABLED) {
+                        { Text("⚠️ API SairiBot sedang dinonaktifkan sementara", color = Color(0xFFB45309)) }
+                    } else null,
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-                OutlinedTextField(
-                    value = ghUserInput,
-                    onValueChange = { ghUserInput = it },
-                    label = { Text("Username GitHub (Web Tagihan)") },
-                    placeholder = { Text("Contoh: username_anda") },
-                    singleLine = true,
+                Text("Platform Pembayaran Jarak Jauh:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = primaryColor)
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val platformList = listOf(
+                        Triple("cloudflare", "☁️ Cloudflare", "Pages"),
+                        Triple("github", "🐙 GitHub", "Pages"),
+                        Triple("custom", "⚙️ Custom", "URL")
+                    )
+                    platformList.forEach { (key, title, sub) ->
+                        val isSelected = selectedPlatform.equals(key, ignoreCase = true)
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) primaryColor else Color(0xFFF8FAFC),
+                            border = BorderStroke(1.dp, if (isSelected) primaryColor else Color(0xFFCBD5E1)),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { selectedPlatform = key }
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = title,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp,
+                                    color = if (isSelected) Color.White else Color(0xFF1E293B),
+                                    maxLines = 1
+                                )
+                                Text(
+                                    text = sub,
+                                    fontSize = 10.sp,
+                                    color = if (isSelected) Color.White.copy(alpha = 0.85f) else Color.Gray,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                when (selectedPlatform.lowercase()) {
+                    "cloudflare" -> {
+                        OutlinedTextField(
+                            value = cfSubdomainInput,
+                            onValueChange = { cfSubdomainInput = it },
+                            label = { Text("Subdomain / Proyek Cloudflare Pages") },
+                            placeholder = { Text("Contoh: nama-proyek") },
+                            supportingText = { Text("Format otomatis: https://<subdomain>.pages.dev/") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    "github" -> {
+                        OutlinedTextField(
+                            value = ghUserInput,
+                            onValueChange = { ghUserInput = it },
+                            label = { Text("Username GitHub") },
+                            placeholder = { Text("Contoh: username_anda") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = ghRepoInput,
+                            onValueChange = { ghRepoInput = it },
+                            label = { Text("Nama Repository GitHub Pages") },
+                            placeholder = { Text("Default: bayar.github.io") },
+                            supportingText = { Text("Format otomatis: https://<user>.github.io/<repo>/") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    "custom" -> {
+                        OutlinedTextField(
+                            value = customUrlInput,
+                            onValueChange = { customUrlInput = it },
+                            label = { Text("URL Web Kustom") },
+                            placeholder = { Text("Contoh: https://domain-anda.com/bayar/") },
+                            supportingText = { Text("URL lengkap web/hosting pribadi Anda") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Preview Link Aktif
+                Surface(
+                    color = if (currentPreviewUrl.isNotBlank()) Color(0xFFEFF6FF) else Color(0xFFFEF2F2),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, if (currentPreviewUrl.isNotBlank()) Color(0xFFBFDBFE) else Color(0xFFFECACA)),
                     modifier = Modifier.fillMaxWidth()
-                )
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text(
+                            text = "🔗 URL Pembayaran Terbentuk:",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (currentPreviewUrl.isNotBlank()) Color(0xFF1E40AF) else Color(0xFF991B1B)
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = if (currentPreviewUrl.isNotBlank()) currentPreviewUrl else "⚠️ Belum lengkap (silakan lengkapi input platform di atas)",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (currentPreviewUrl.isNotBlank()) Color(0xFF2563EB) else Color(0xFFDC2626)
+                        )
+                    }
+                }
 
-                Spacer(modifier = Modifier.height(8.dp))
-
-                OutlinedTextField(
-                    value = ghRepoInput,
-                    onValueChange = { ghRepoInput = it },
-                    label = { Text("Nama Repository GitHub Pages") },
-                    placeholder = { Text("Default: bayar.github.io") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 Button(
                     onClick = {
-                        appSettings.apiKey = apiKeyInput
+                        if (ApiService.IS_API_ENABLED) {
+                            appSettings.apiKey = apiKeyInput
+                        }
+                        appSettings.paymentPlatform = selectedPlatform
+                        appSettings.cloudflareSubdomain = cfSubdomainInput
                         appSettings.githubUser = ghUserInput
                         appSettings.githubRepo = ghRepoInput
-                        viewModel.fetchBalance()
+                        appSettings.customPaymentUrl = customUrlInput
+                        if (ApiService.IS_API_ENABLED) {
+                            viewModel.fetchBalance()
+                        }
                         Toast.makeText(context, "Pengaturan Berhasil Disimpan!", Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -1579,14 +1878,103 @@ fun ProfilScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Text("📖 Panduan Setup Web Tagihan GitHub", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color(0xFF1E40AF))
-                Spacer(modifier = Modifier.height(6.dp))
-                Text("1. Buka atau fork template repository: https://github.com/iqbalcraftmc/bayar.github.io", fontSize = 11.sp, color = Color(0xFF1E3A8A))
-                Text("2. Atau buat repository baru dengan nama 'bayar.github.io' dan unggah template web tagihan.", fontSize = 11.sp, color = Color(0xFF1E3A8A))
-                Text("3. Aktifkan GitHub Pages di menu Settings > Pages.", fontSize = 11.sp, color = Color(0xFF1E3A8A))
-                Text("4. Masukkan Username GitHub Anda pada formulir konfigurasi di atas.", fontSize = 11.sp, color = Color(0xFF1E3A8A))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("🌐", fontSize = 16.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        "Pilihan Platform Pembayaran Jarak Jauh",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = Color(0xFF1E40AF)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Surface(
+                    color = Color.White,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFF93C5FD)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text("1. ☁️ Cloudflare Pages (Direkomendasikan)", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF1E3A8A))
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            "Deploy cepat langsung dari GitHub ke Cloudflare Pages. Jaringan CDN Edge global ultra-cepat, SSL otomatis, dan tanpa batas rate limit.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF334155),
+                            lineHeight = 16.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("2. 🐙 GitHub Pages", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF1E3A8A))
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            "Hosting gratis langsung dari repository GitHub Anda (https://<username>.github.io/<repo>/). Cukup aktifkan Pages di Settings repository.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF334155),
+                            lineHeight = 16.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("3. ⚙️ Custom URL", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF1E3A8A))
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            "Gunakan domain atau server web Anda sendiri untuk memuat antarmuka pembayaran pelanggan.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF334155),
+                            lineHeight = 16.sp
+                        )
+
+                        if (currentPreviewUrl.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        try {
+                                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(currentPreviewUrl))
+                                            context.startActivity(intent)
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "Gagal membuka link: ${e.message}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f).height(38.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
+                                ) {
+                                    Text("🌐 Buka Web", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        val clipMgr = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                        clipMgr?.setPrimaryClip(ClipData.newPlainText("Link Web Pembayaran", currentPreviewUrl))
+                                        Toast.makeText(context, "Link pembayaran disalin!", Toast.LENGTH_SHORT).show()
+                                    },
+                                    modifier = Modifier.weight(1f).height(38.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("📋 Salin Link", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                                }
+                            }
+                        }
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(12.dp))
+
+                Text("📖 Panduan Setup Mandiri (Deploy Sendiri)", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF1E40AF))
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("1. Buka atau fork template repository: https://github.com/iqbalcraftmc/bayar.github.io", fontSize = 11.sp, color = Color(0xFF1E3A8A))
+                Text("2. Ganti API Key di file script dengan API Key SairiBot Anda sendiri.", fontSize = 11.sp, color = Color(0xFF1E3A8A))
+                Text("3. Pilih platform deploy: Cloudflare Pages, GitHub Pages, atau Hosting Kustom.", fontSize = 11.sp, color = Color(0xFF1E3A8A))
+                Text("4. Masukkan konfigurasi hasil deploy Anda pada form pengaturan di atas.", fontSize = 11.sp, color = Color(0xFF1E3A8A))
+
+                Spacer(modifier = Modifier.height(10.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1599,9 +1987,9 @@ fun ProfilScreen(
                         },
                         modifier = Modifier.weight(1f).height(38.dp),
                         shape = RoundedCornerShape(8.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
                     ) {
-                        Text("⭐ Buka Template", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        Text("⭐ Repo Template", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                     }
 
                     OutlinedButton(
@@ -1695,6 +2083,15 @@ fun ProfilScreen(
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "Versi 2.6.0 (Build 3) • Public Edition",
+                    fontSize = 11.sp,
+                    color = Color(0xFF64748B),
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
 
                 Text(
                     text = "© 2026 iqbalcraftmc. All rights reserved.",
@@ -1876,7 +2273,7 @@ fun QrisImage(imageUrl: String, modifier: Modifier = Modifier) {
 fun sendToWhatsApp(context: Context, total: Int, invoiceId: String, qrisUrl: String, appSettings: AppSettings) {
     val baseUrl = appSettings.paymentBaseUrl
     if (baseUrl.isBlank()) {
-        Toast.makeText(context, "Harap isi Username GitHub di menu Profil dulu!", Toast.LENGTH_LONG).show()
+        Toast.makeText(context, "Harap atur URL pembayaran di menu Profil dulu!", Toast.LENGTH_LONG).show()
         return
     }
 
@@ -1898,7 +2295,7 @@ fun sendToWhatsApp(context: Context, total: Int, invoiceId: String, qrisUrl: Str
 fun copyToClipboard(context: Context, total: Int, invoiceId: String, qrisUrl: String, appSettings: AppSettings) {
     val baseUrl = appSettings.paymentBaseUrl
     if (baseUrl.isBlank()) {
-        Toast.makeText(context, "Harap isi Username GitHub di menu Profil dulu!", Toast.LENGTH_LONG).show()
+        Toast.makeText(context, "Harap atur URL pembayaran di menu Profil dulu!", Toast.LENGTH_LONG).show()
         return
     }
 
