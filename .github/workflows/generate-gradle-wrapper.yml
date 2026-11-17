@@ -23,8 +23,23 @@ jobs:
         with:
           gradle-version: "9.4.1"
 
-      - name: Generate Gradle Wrapper
-        run: gradle wrapper --gradle-version 9.4.1 --distribution-type bin
+      # Generate the wrapper in a clean, empty project so that the app's
+      # Android/Kotlin plugins are not loaded during wrapper generation.
+      - name: Generate Gradle Wrapper in temporary project
+        run: |
+          mkdir -p "$RUNNER_TEMP/wrapper-project"
+          cd "$RUNNER_TEMP/wrapper-project"
+          printf "rootProject.name = 'wrapper-bootstrap'\n" > settings.gradle
+          gradle wrapper --gradle-version 9.4.1 --distribution-type bin
+
+      - name: Copy Gradle Wrapper into repository
+        run: |
+          mkdir -p gradle/wrapper
+          cp "$RUNNER_TEMP/wrapper-project/gradlew" .
+          cp "$RUNNER_TEMP/wrapper-project/gradlew.bat" .
+          cp "$RUNNER_TEMP/wrapper-project/gradle/wrapper/gradle-wrapper.jar" gradle/wrapper/
+          cp "$RUNNER_TEMP/wrapper-project/gradle/wrapper/gradle-wrapper.properties" gradle/wrapper/
+          chmod +x gradlew
 
       - name: Commit Gradle Wrapper
         run: |
