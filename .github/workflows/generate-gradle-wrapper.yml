@@ -1,0 +1,39 @@
+name: Generate Gradle Wrapper
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/generate-gradle-wrapper.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    name: Generate and commit Gradle Wrapper
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.4.1"
+
+      - name: Generate Gradle Wrapper
+        run: gradle wrapper --gradle-version 9.4.1 --distribution-type bin
+
+      - name: Commit Gradle Wrapper
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gradlew gradlew.bat gradle/wrapper
+          if git diff --cached --quiet; then
+            echo "No Gradle Wrapper changes to commit."
+          else
+            git commit -m "Add Gradle Wrapper"
+            git push
+          fi
