@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -70,6 +71,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -342,9 +344,9 @@ data class Invoice(
 
 object ApiService {
     const val IS_API_ENABLED = false
-    const val API_DISABLED_MESSAGE = "API SairiBot Kasir sedang dinonaktifkan sementara."
+    const val API_DISABLED_MESSAGE = "Sistem API sedang dimatikan."
 
-    private val client = OkHttpClient()
+    private val client by lazy { OkHttpClient() }
 
     suspend fun createInvoice(amount: String, apiKey: String): Invoice? = withContext(Dispatchers.IO) {
         if (!IS_API_ENABLED || apiKey.isBlank()) return@withContext null
@@ -484,14 +486,14 @@ object ApiService {
 
 class KasirViewModel(application: android.app.Application) : AndroidViewModel(application) {
     val appSettings = AppSettings(application)
-    private val prefs = application.getSharedPreferences("kasir_prefs", Context.MODE_PRIVATE)
-    val androidId = Settings.Secure.getString(application.contentResolver, Settings.Secure.ANDROID_ID) ?: "UNKNOWN_DEVICE"
 
     private val dao = AppDatabase.getDatabase(application).invoiceDao()
     val history = dao.getAllInvoices().stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     private val _apiBalance = MutableStateFlow(0)
-    val balance = _apiBalance.asStateFlow()
+    val balance = combine(dao.getTotalBalance(), _apiBalance) { localTotal, apiTotal ->
+        if (ApiService.IS_API_ENABLED) apiTotal else (localTotal ?: 0)
+    }.stateIn(viewModelScope, SharingStarted.Lazily, 0)
 
     private val _isSyncingHistory = MutableStateFlow(false)
     val isSyncingHistory = _isSyncingHistory.asStateFlow()
@@ -506,7 +508,9 @@ class KasirViewModel(application: android.app.Application) : AndroidViewModel(ap
     }
 
     init {
-        fetchBalance()
+        if (ApiService.IS_API_ENABLED) {
+            fetchBalance()
+        }
     }
 
 
@@ -685,6 +689,7 @@ fun LicenseActivationScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFFF1F5F9))
+            .safeDrawingPadding()
             .padding(16.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -874,7 +879,10 @@ fun LicenseActivationScreen(
                         )
                         TextButton(
                             onClick = {
-                                val clipText = clipboardManager?.primaryClip?.getItemAt(0)?.text?.toString()
+                                val clip = clipboardManager?.primaryClip
+                                val clipText = if (clip != null && clip.itemCount > 0) {
+                                    clip.getItemAt(0)?.text?.toString()
+                                } else null
                                 if (!clipText.isNullOrBlank()) {
                                     licenseInput = clipText.trim()
                                     Toast.makeText(context, "Kunci lisensi ditempel!", Toast.LENGTH_SHORT).show()
@@ -1027,7 +1035,7 @@ fun KasirQrisScreen(
     val bgColor = Color(0xFFF3F4F9)
     val textColor = Color(0xFF1B1B1F)
 
-    var currentTab by remember { mutableStateOf(BottomTab.HOME) }
+    var currentTab by rememberSaveable { mutableStateOf(BottomTab.HOME) }
     val amount by viewModel.amount.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val invoice by viewModel.invoice.collectAsState()
@@ -1062,6 +1070,7 @@ fun KasirQrisScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .statusBarsPadding()
                         .height(64.dp)
                         .padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1126,6 +1135,7 @@ fun KasirQrisScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .navigationBarsPadding()
                         .height(80.dp)
                         .padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1151,83 +1161,111 @@ fun KasirQrisScreen(
                     ) {
                         if (!ApiService.IS_API_ENABLED) {
                             ApiMaintenanceBanner(modifier = Modifier.padding(bottom = 16.dp))
-                        }
 
-                        Surface(
-                            color = Color.White,
-                            shape = RoundedCornerShape(28.dp),
-                            border = BorderStroke(1.dp, Color(0x80E2E8F0)),
-                            shadowElevation = 1.dp,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(20.dp)) {
-                                Text(
-                                    text = "NOMINAL TRANSAKSI (IDR)",
-                                    color = primaryColor,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    letterSpacing = 1.5.sp,
-                                    modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
-                                )
-                                
-                                TextField(
-                                    value = amount,
-                                    onValueChange = { viewModel.updateAmount(it) },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    modifier = Modifier.fillMaxWidth().height(56.dp)
-                                        .border(2.dp, if (amount.isNotBlank()) primaryColor else Color.Transparent, RoundedCornerShape(16.dp)),
-                                    singleLine = true,
-                                    leadingIcon = {
-                                        Text(
-                                            text = "Rp",
-                                            color = Color(0xFF64748B),
-                                            fontWeight = FontWeight.SemiBold,
-                                            modifier = Modifier.padding(start = 12.dp, end = 4.dp)
-                                        )
-                                    },
-                                    textStyle = androidx.compose.ui.text.TextStyle(
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 20.sp,
-                                        color = textColor
-                                    ),
-                                    colors = TextFieldDefaults.colors(
-                                        focusedContainerColor = bgColor,
-                                        unfocusedContainerColor = bgColor,
-                                        focusedIndicatorColor = Color.Transparent,
-                                        unfocusedIndicatorColor = Color.Transparent,
-                                        cursorColor = primaryColor
-                                    ),
-                                    shape = RoundedCornerShape(16.dp)
-                                )
-                                
-                                Spacer(modifier = Modifier.height(16.dp))
-                                
-                                Button(
-                                    onClick = { viewModel.generateQris() },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(56.dp),
-                                    shape = RoundedCornerShape(16.dp),
-                                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp, pressedElevation = 2.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = primaryColor,
-                                        disabledContainerColor = Color(0xFF94A3B8)
-                                    ),
-                                    enabled = ApiService.IS_API_ENABLED && !isLoading && amount.isNotBlank()
+                            Surface(
+                                color = Color.White,
+                                shape = RoundedCornerShape(24.dp),
+                                border = BorderStroke(1.dp, Color(0x80E2E8F0)),
+                                shadowElevation = 1.dp,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(24.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
-                                    if (!ApiService.IS_API_ENABLED) {
-                                        Text("⏸️ API Dinonaktifkan Sementara", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White)
-                                    } else if (isLoading) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(24.dp),
-                                            color = Color.White,
-                                            strokeWidth = 2.dp
-                                        )
-                                    } else {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text("⚡", fontSize = 18.sp)
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Generate QRIS", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                    Text("🔌", fontSize = 36.sp)
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Text(
+                                        text = "Mode Offline Aktif",
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = textColor
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = "Pembuatan invoice QRIS otomatis dinonaktifkan karena sistem API dimatikan. Anda tetap dapat melihat riwayat transaksi lokal dan mengatur tautan pembayaran di menu Profil.",
+                                        fontSize = 12.sp,
+                                        color = Color(0xFF64748B),
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                        lineHeight = 18.sp
+                                    )
+                                }
+                            }
+                        } else {
+                            Surface(
+                                color = Color.White,
+                                shape = RoundedCornerShape(28.dp),
+                                border = BorderStroke(1.dp, Color(0x80E2E8F0)),
+                                shadowElevation = 1.dp,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(20.dp)) {
+                                    Text(
+                                        text = "NOMINAL TRANSAKSI (IDR)",
+                                        color = primaryColor,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        letterSpacing = 1.5.sp,
+                                        modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
+                                    )
+                                    
+                                    TextField(
+                                        value = amount,
+                                        onValueChange = { viewModel.updateAmount(it.filter { ch -> ch.isDigit() }) },
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        modifier = Modifier.fillMaxWidth().height(56.dp)
+                                            .border(2.dp, if (amount.isNotBlank()) primaryColor else Color.Transparent, RoundedCornerShape(16.dp)),
+                                        singleLine = true,
+                                        leadingIcon = {
+                                            Text(
+                                                text = "Rp",
+                                                color = Color(0xFF64748B),
+                                                fontWeight = FontWeight.SemiBold,
+                                                modifier = Modifier.padding(start = 12.dp, end = 4.dp)
+                                            )
+                                        },
+                                        textStyle = androidx.compose.ui.text.TextStyle(
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 20.sp,
+                                            color = textColor
+                                        ),
+                                        colors = TextFieldDefaults.colors(
+                                            focusedContainerColor = bgColor,
+                                            unfocusedContainerColor = bgColor,
+                                            focusedIndicatorColor = Color.Transparent,
+                                            unfocusedIndicatorColor = Color.Transparent,
+                                            cursorColor = primaryColor
+                                        ),
+                                        shape = RoundedCornerShape(16.dp)
+                                    )
+                                    
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    
+                                    Button(
+                                        onClick = { viewModel.generateQris() },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(56.dp),
+                                        shape = RoundedCornerShape(16.dp),
+                                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp, pressedElevation = 2.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = primaryColor,
+                                            disabledContainerColor = Color(0xFF94A3B8)
+                                        ),
+                                        enabled = !isLoading && amount.isNotBlank()
+                                    ) {
+                                        if (isLoading) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(24.dp),
+                                                color = Color.White,
+                                                strokeWidth = 2.dp
+                                            )
+                                        } else {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text("⚡", fontSize = 18.sp)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text("Generate QRIS", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                            }
                                         }
                                     }
                                 }
@@ -1240,13 +1278,7 @@ fun KasirQrisScreen(
                             InvoiceSection(
                                 invoice = invoice!!,
                                 status = status,
-                                onCheckStatus = {
-                                    if (!ApiService.IS_API_ENABLED) {
-                                        Toast.makeText(context, ApiService.API_DISABLED_MESSAGE, Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        viewModel.checkStatusManually()
-                                    }
-                                },
+                                onCheckStatus = { viewModel.checkStatusManually() },
                                 onDone = { viewModel.clearInvoice() },
                                 context = context,
                                 appSettings = viewModel.appSettings
@@ -1316,18 +1348,18 @@ fun ApiMaintenanceBanner(modifier: Modifier = Modifier) {
             modifier = Modifier.padding(14.dp),
             verticalAlignment = Alignment.Top
         ) {
-            Text("⚠️", fontSize = 18.sp)
+            Text("🔌", fontSize = 18.sp)
             Spacer(modifier = Modifier.width(10.dp))
             Column {
                 Text(
-                    text = "API SairiBot Kasir Dinonaktifkan Sementara",
+                    text = "Sistem API Dinonaktifkan",
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFF92400E)
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "Layanan server API (pembuatan QRIS, cek status, sinkronisasi, dan penarikan saldo) sedang dinonaktifkan sementara. Riwayat transaksi lokal tetap tersedia.",
+                    text = "Koneksi server API sedang dimatikan. Aplikasi berjalan dalam mode lokal tanpa permintaan jaringan ke API.",
                     fontSize = 11.sp,
                     color = Color(0xFFB45309),
                     lineHeight = 16.sp
@@ -1373,25 +1405,24 @@ fun RiwayatScreen(
                     }
                 }
                 
-                IconButton(
-                    onClick = onSync,
-                    enabled = !isSyncing,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .background(
-                            if (ApiService.IS_API_ENABLED) primaryColor.copy(alpha = 0.1f) else Color(0xFFE2E8F0),
-                            RoundedCornerShape(10.dp)
-                        )
-                ) {
-                    if (isSyncing) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = primaryColor)
-                    } else {
-                        Icon(
-                            Icons.Default.Refresh,
-                            contentDescription = "Sync",
-                            tint = if (ApiService.IS_API_ENABLED) primaryColor else Color(0xFF94A3B8),
-                            modifier = Modifier.size(20.dp)
-                        )
+                if (ApiService.IS_API_ENABLED) {
+                    IconButton(
+                        onClick = onSync,
+                        enabled = !isSyncing,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(primaryColor.copy(alpha = 0.1f), RoundedCornerShape(10.dp))
+                    ) {
+                        if (isSyncing) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = primaryColor)
+                        } else {
+                            Icon(
+                                Icons.Default.Refresh,
+                                contentDescription = "Sync",
+                                tint = primaryColor,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -1542,39 +1573,43 @@ fun SaldoScreen(balance: Int, primaryColor: Color, onRefresh: () -> Unit) {
             ApiMaintenanceBanner(modifier = Modifier.padding(bottom = 16.dp))
         }
 
-        Text("Total Saldo Tersedia", fontSize = 16.sp, color = Color.Gray)
+        Text(
+            if (ApiService.IS_API_ENABLED) "Total Saldo Tersedia" else "Total Saldo Lokal (Transaksi Sukses)",
+            fontSize = 16.sp,
+            color = Color.Gray
+        )
         Spacer(modifier = Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Rp$balance", fontSize = 36.sp, fontWeight = FontWeight.Bold, color = primaryColor)
-            Spacer(modifier = Modifier.width(8.dp))
-            IconButton(
-                onClick = onRefresh,
-                enabled = ApiService.IS_API_ENABLED
-            ) {
-                Icon(
-                    Icons.Default.Refresh,
-                    contentDescription = "Refresh",
-                    tint = if (ApiService.IS_API_ENABLED) primaryColor else Color(0xFF94A3B8)
-                )
+            if (ApiService.IS_API_ENABLED) {
+                Spacer(modifier = Modifier.width(8.dp))
+                IconButton(onClick = onRefresh) {
+                    Icon(
+                        Icons.Default.Refresh,
+                        contentDescription = "Refresh",
+                        tint = primaryColor
+                    )
+                }
             }
         }
         
-        Spacer(modifier = Modifier.height(24.dp))
-        Button(
-            onClick = { showWithdrawSheet = true },
-            enabled = ApiService.IS_API_ENABLED,
-            modifier = Modifier.fillMaxWidth().height(48.dp),
-            shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = primaryColor,
-                disabledContainerColor = Color(0xFF94A3B8)
-            )
-        ) {
-            Text(
-                if (ApiService.IS_API_ENABLED) "🌐 Penarikan Saldo" else "⏸️ Penarikan Saldo Dinonaktifkan",
-                fontWeight = FontWeight.Bold,
-                color = Color.White
-            )
+        if (ApiService.IS_API_ENABLED) {
+            Spacer(modifier = Modifier.height(24.dp))
+            Button(
+                onClick = {
+                    isWebViewLoading = true
+                    showWithdrawSheet = true
+                },
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = primaryColor)
+            ) {
+                Text(
+                    "🌐 Penarikan Saldo",
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
         }
     }
 }
@@ -1612,7 +1647,11 @@ fun ProfilScreen(
         }
         Spacer(modifier = Modifier.height(12.dp))
         Text("SairiBot Kasir (Publik)", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        Text("Atur API Key & Link GitHub Anda di bawah ini", color = Color.Gray, fontSize = 12.sp)
+        Text(
+            if (ApiService.IS_API_ENABLED) "Atur API Key & Link Pembayaran Anda di bawah ini" else "Atur Lisensi & Platform Pembayaran Anda di bawah ini",
+            color = Color.Gray,
+            fontSize = 12.sp
+        )
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -1710,20 +1749,33 @@ fun ProfilScreen(
                 Text("⚙️ Konfigurasi Pengguna Publik", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = primaryColor)
                 Spacer(modifier = Modifier.height(12.dp))
 
-                OutlinedTextField(
-                    value = apiKeyInput,
-                    onValueChange = { if (ApiService.IS_API_ENABLED) apiKeyInput = it },
-                    readOnly = !ApiService.IS_API_ENABLED,
-                    label = { Text("API Key SairiBot") },
-                    placeholder = { Text("Masukkan API Key Anda") },
-                    supportingText = if (!ApiService.IS_API_ENABLED) {
-                        { Text("⚠️ API SairiBot sedang dinonaktifkan sementara", color = Color(0xFFB45309)) }
-                    } else null,
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
+                if (ApiService.IS_API_ENABLED) {
+                    OutlinedTextField(
+                        value = apiKeyInput,
+                        onValueChange = { apiKeyInput = it },
+                        label = { Text("API Key SairiBot") },
+                        placeholder = { Text("Masukkan API Key Anda") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                } else {
+                    Surface(
+                        color = Color(0xFFFEF2F2),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, Color(0xFFFECACA)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "🔌 Sistem API sedang dimatikan (Mode Lokal)",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFFB91C1C),
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
 
                 Text("Platform Pembayaran Jarak Jauh:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = primaryColor)
                 Spacer(modifier = Modifier.height(6.dp))
@@ -1982,8 +2034,12 @@ fun ProfilScreen(
                 ) {
                     Button(
                         onClick = {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/iqbalcraftmc/bayar.github.io"))
-                            context.startActivity(intent)
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/iqbalcraftmc/bayar.github.io"))
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "Tidak dapat membuka browser", Toast.LENGTH_SHORT).show()
+                            }
                         },
                         modifier = Modifier.weight(1f).height(38.dp),
                         shape = RoundedCornerShape(8.dp),
@@ -1994,8 +2050,12 @@ fun ProfilScreen(
 
                     OutlinedButton(
                         onClick = {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/new"))
-                            context.startActivity(intent)
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/new"))
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "Tidak dapat membuka browser", Toast.LENGTH_SHORT).show()
+                            }
                         },
                         modifier = Modifier.weight(1f).height(38.dp),
                         shape = RoundedCornerShape(8.dp)
@@ -2059,8 +2119,12 @@ fun ProfilScreen(
                 ) {
                     OutlinedButton(
                         onClick = {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://iqbalcraftmc.github.io/"))
-                            context.startActivity(intent)
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://iqbalcraftmc.github.io/"))
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "Tidak dapat membuka browser", Toast.LENGTH_SHORT).show()
+                            }
                         },
                         modifier = Modifier.weight(1f).height(36.dp),
                         shape = RoundedCornerShape(8.dp),
@@ -2071,8 +2135,12 @@ fun ProfilScreen(
 
                     OutlinedButton(
                         onClick = {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/iqbalcraftmc"))
-                            context.startActivity(intent)
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/iqbalcraftmc"))
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "Tidak dapat membuka browser", Toast.LENGTH_SHORT).show()
+                            }
                         },
                         modifier = Modifier.weight(1f).height(36.dp),
                         shape = RoundedCornerShape(8.dp),
@@ -2175,7 +2243,7 @@ fun InvoiceSection(
                         Text("Biaya Layanan", fontSize = 12.sp, color = Color.Gray)
                         Text("Rp${invoice.fee}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1E293B))
                     }
-                    Divider(modifier = Modifier.padding(vertical = 12.dp), color = Color(0xFFE2E8F0))
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = Color(0xFFE2E8F0))
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("Total Bayar", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0061A4))
                         Text("Rp${invoice.total}", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0061A4))
@@ -2187,7 +2255,9 @@ fun InvoiceSection(
             
             Column(modifier = Modifier.fillMaxWidth()) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    ActionCard(icon = "🔄", label = "Cek Status", modifier = Modifier.weight(1f), onClick = onCheckStatus)
+                    if (ApiService.IS_API_ENABLED) {
+                        ActionCard(icon = "🔄", label = "Cek Status", modifier = Modifier.weight(1f), onClick = onCheckStatus)
+                    }
                     ActionCard(icon = "💬", label = "Kirim WA", modifier = Modifier.weight(1f), onClick = { sendToWhatsApp(context, invoice.total, invoice.invoiceId, invoice.qrisImageUrl, appSettings) })
                 }
                 Spacer(modifier = Modifier.height(12.dp))
